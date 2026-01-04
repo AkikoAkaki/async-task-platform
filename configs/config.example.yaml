@@ -1,0 +1,12 @@
+app:
+  name: "distributed-delay-queue"
+  env: "local" # local, dev, prod
+
+server:
+  port: 8080
+  grpc_port: 9090
+
+redis:
+  addr: "localhost:6379"
+  password: ""
+  db: 0

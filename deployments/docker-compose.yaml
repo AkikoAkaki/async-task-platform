@@ -1,0 +1,16 @@
+version: '3.8'
+
+services:
+  # Redis 缓存服务
+  redis:
+    image: redis:7-alpine                   # 使用轻量级 Alpine 镜像，下载快，占用内存低，安全漏洞少
+    container_name: ddq_redis               # 容器名称
+    ports:
+      - "6379:6379"                         # 映射，主机端口:容器端口
+    volumes:
+      - redis_data:/data                    # 持久化存储 Redis 数据，即使删除了容器，数据依然保存在磁盘上
+    command: redis-server --appendonly yes  # 开启 AOF 持久化，防止数据丢失，会记录每一次写操作，安全性更高
+    restart: always                         # 容器异常退出（崩溃/宿主机重启）时自动重启，保证高可用性
+
+volumes:
+  redis_data:                               # 定义持久化存储卷，防止数据因容器重启或删除而丢失
