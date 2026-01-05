@@ -114,7 +114,7 @@ jobs:
     # =====================================================
     services:
       redis:
-        image: redis:${{ env.REDIS_VERSION }}
+        image: redis:7-alpine
         ports:
           - 6379:6379
         # 健康检查策略: 10s间隔 * 5次重试 = 最长50s等待
