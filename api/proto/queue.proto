@@ -1,0 +1,56 @@
+syntax = "proto3";
+
+package api.queue;
+
+option go_package = "github.com/AkikoAkaki/distributed-delay-queue/api/proto;pb";
+
+// DelayQueueService 定义了分布式延迟队列的核心能力。
+service DelayQueueService {
+  // Enqueue 提交一个延迟任务。
+  rpc Enqueue(EnqueueRequest) returns (EnqueueResponse);
+
+  // Retrieve 轮询获取已到期的任务 (通常由 Worker 调用，也可以暴露给外部)。
+  rpc Retrieve(RetrieveRequest) returns (RetrieveResponse);
+
+  // Delete 取消/删除一个任务。
+  rpc Delete(DeleteRequest) returns (DeleteResponse);
+}
+
+// EnqueueRequest 任务提交请求参数。
+message EnqueueRequest {
+  string topic = 1;         // 业务主题 (如 "order_cancel")
+  string payload = 2;       // 任务载荷 (JSON string)
+  int64  delay_seconds = 3; // 延迟时间 (秒)
+  string id = 4;            // 可选：客户端指定的唯一ID，若为空则由服务端生成
+}
+
+message EnqueueResponse {
+  bool success = 1;
+  string id = 2;            // 任务ID
+  string error_message = 3; // 简略错误信息
+}
+
+message RetrieveRequest {
+  string topic = 1;
+  int32  batch_size = 2;    // 批量拉取数量
+}
+
+message RetrieveResponse {
+  repeated Task tasks = 1;
+}
+
+message DeleteRequest {
+  string id = 1;
+}
+
+message DeleteResponse {
+  bool success = 1;
+}
+
+// Task 核心任务模型
+message Task {
+  string id = 1;
+  string topic = 2;
+  string payload = 3;
+  int64  execute_time = 4; // 计划执行时间戳
+}

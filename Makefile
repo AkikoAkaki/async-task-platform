@@ -16,10 +16,12 @@ run-server:
 run-worker:
 	go run cmd/worker/main.go
 
-# 生成 Proto 代码 (Phase 4 会用到，先占位)
+# 生成 Proto 代码
 proto:
 	@echo "Generating protobuf code..."
-	# protoc command will go here
+	protoc --go_out=. --go_opt=paths=source_relative \
+	       --go-grpc_out=. --go-grpc_opt=paths=source_relative \
+	       api/proto/queue.proto
 
 # 代码格式化 (重要: 必须在 lint 前执行)
 fmt:
