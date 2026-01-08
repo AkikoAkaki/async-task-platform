@@ -2,11 +2,11 @@
 
 # 启动基础设施 (Redis)
 up:
-	docker-compose -f deployments/docker-compose.yaml up -d
+	docker-compose -f deploy/docker-compose.yaml up -d
 
 # 关闭基础设施
 down:
-	docker-compose -f deployments/docker-compose.yaml down
+	docker-compose -f deploy/docker-compose.yaml down
 
 # 运行 Server (暂时只是个空壳)
 run-server:
