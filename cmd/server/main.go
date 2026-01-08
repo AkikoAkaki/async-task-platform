@@ -1,48 +1,56 @@
 package main
 
 import (
-	"context"
 	"fmt"
 	"log"
-	"time"
+	"net"
+	"os"
+	"os/signal"
+	"syscall"
 
 	pb "github.com/AkikoAkaki/distributed-delay-queue/api/proto"
+	"github.com/AkikoAkaki/distributed-delay-queue/internal/queue"
 	"github.com/AkikoAkaki/distributed-delay-queue/internal/storage/redis"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/reflection"
 )
 
 func main() {
-	// 1. 初始化 Store
-	store := redis.NewStore("localhost:6379")
-	ctx := context.Background()
+	// 1. 初始化配置 (Hardcode for MVP, 实际应读取 config.yaml)
+	redisAddr := "localhost:6379"
+	port := ":9090"
 
-	// 2. 模拟生产任务 (延迟 5 秒)
-	fmt.Println("--- Producer: Adding Task ---")
-	task := &pb.Task{
-		Id:          "task-001",
-		Payload:     `{"order_id": 1024}`,
-		ExecuteTime: time.Now().Add(5 * time.Second).Unix(),
-	}
-	if err := store.Add(ctx, task); err != nil {
-		log.Fatalf("Add failed: %v", err)
-	}
-	fmt.Println("Task added, waiting for 5 seconds...")
+	// 2. 初始化基础设施
+	store := redis.NewStore(redisAddr)
 
-	// 3. 模拟 Worker 轮询
-	for i := 0; i < 10; i++ {
-		tasks, err := store.GetReady(ctx, "default", 10)
-		if err != nil {
-			log.Printf("Poll error: %v", err)
+	// 3. 初始化 gRPC Server
+	lis, err := net.Listen("tcp", port)
+	if err != nil {
+		log.Fatalf("failed to listen: %v", err)
+	}
+
+	s := grpc.NewServer()
+	svc := queue.NewService(store)
+	pb.RegisterDelayQueueServiceServer(s, svc)
+
+	// 开启 gRPC Reflection (方便调试工具如 grpcurl 使用)
+	reflection.Register(s)
+
+	// 4. 启动服务 (Goroutine)
+	go func() {
+		log.Printf("gRPC server listening at %v", lis.Addr())
+		if err := s.Serve(lis); err != nil {
+			log.Fatalf("failed to serve: %v", err)
 		}
+	}()
 
-		if len(tasks) > 0 {
-			fmt.Printf("--- Worker: Got %d tasks! ---\n", len(tasks))
-			for _, t := range tasks {
-				fmt.Printf("Executing Task: ID=%s, Payload=%s\n", t.Id, t.Payload)
-			}
-			return // 成功取到，退出
-		}
+	// 5. 优雅退出 (Graceful Shutdown)
+	// 监听系统信号：Ctrl+C (SIGINT) 或 kill (SIGTERM)
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+	<-quit
 
-		fmt.Println("Worker: No ready tasks, sleeping 1s...")
-		time.Sleep(1 * time.Second)
-	}
+	log.Println("Shutting down gRPC server...")
+	s.GracefulStop()
+	log.Println("Server stopped")
 }

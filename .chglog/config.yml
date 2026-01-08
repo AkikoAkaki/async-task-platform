@@ -1,0 +1,52 @@
+style: angular
+template: CHANGELOG.tpl.md
+info:
+  title: Changelog
+  repository_url: https://github.com/AkikoAkaki/distributed-delay-queue
+options:
+  tag_filter_pattern: '^v'
+  sort: desc
+  commits:
+    filters:
+      Type:
+        - build
+        - chore
+        - ci
+        - docs
+        - feat
+        - fix
+        - perf
+        - refactor
+        - test
+    sort_by: Scope
+  commit_groups:
+    sort_by: Custom
+    order:
+      - feat
+      - fix
+      - perf
+      - refactor
+      - docs
+      - build
+      - ci
+      - chore
+      - test
+    title_maps:
+      feat: Added
+      fix: Fixed
+      perf: Performance
+      refactor: Changed
+      docs: Documentation
+      build: Build
+      ci: CI
+      chore: Chore
+      test: Tests
+  header:
+    pattern: "^(\\w*)(?:\\(([\\w\\$\\.\\-\\*\\s]*)\\))?\\:\\s(.*)$"
+    pattern_maps:
+      - Type
+      - Scope
+      - Subject
+  notes:
+    keywords:
+      - BREAKING CHANGE

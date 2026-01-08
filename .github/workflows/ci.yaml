@@ -15,14 +15,23 @@
 # ========================================================
 on:
   push:
-    # 应急修复场景下允许直接提交主干，但仍需CI验证
-    branches: [ "main" ]
+    # 主干受保护；develop 与 release/* 分支的每次推送也需要完整CI
+    branches:
+      - main
+      - develop
+      - release/**
+      - hotfix/**
   pull_request:
-    # feature/*, hotfix/*, refactor/* 等分支向主干合并时强制触发
-    branches: [ "main" ]
+    # 所有面向 main / develop / release/* 的合并请求全部跑CI
+    branches:
+      - main
+      - develop
+      - release/**
   # 定时触发：每日凌晨进行全量健康巡检，提前发现依赖项(如Go版本)兼容性问题
   schedule:
     - cron: '0 0 * * *'
+  # 手动触发：用于发布前的预检查或补充性验证
+  workflow_dispatch:
 
 # ========================================================
 # Global Environments: 全局环境变量
@@ -262,6 +271,65 @@ jobs:
         with:
           sarif_file: 'trivy-results.sarif'
         if: always()  # 即使前面步骤失败，也上传安全报告
+
+  # =======================================================
+  # Stage: Release Readiness (仅 release/* 分支执行)
+  # 职责: 验证分支命名、CHANGELOG/DEVELOPMENT_LOG 更新情况，并渲染 git-chglog 预览
+  # 依赖关系: 必须在测试与构建成功后执行
+  # =======================================================
+  release-readiness:
+    name: Release Readiness Gate
+    runs-on: ubuntu-latest
+    needs: test-and-build
+    if: startsWith(github.ref, 'refs/heads/release/')
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Initialize Go toolchain for release utilities
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+          cache-dependency-path: go.sum
+
+      - name: Validate release branch naming & docs
+        run: |
+          RELEASE_REF="${GITHUB_REF#refs/heads/release/}"
+          if [ -z "$RELEASE_REF" ]; then
+            echo "::error::Release branches must follow release/vX.Y.Z"
+            exit 1
+          fi
+          RELEASE_VERSION="${RELEASE_REF#v}"
+          if ! grep -Fq "[${RELEASE_VERSION}]" CHANGELOG.md; then
+            echo "::error::CHANGELOG.md missing entry for ${RELEASE_VERSION}"
+            exit 1
+          fi
+          if ! grep -q "${RELEASE_REF}" DEVELOPMENT_LOG.md; then
+            echo "::error::DEVELOPMENT_LOG.md should mention release target ${RELEASE_REF}"
+            exit 1
+          fi
+
+      - name: Install git-chglog
+        run: |
+          go install github.com/git-chglog/git-chglog/cmd/git-chglog@latest
+
+      - name: Render changelog preview for reviewers
+        env:
+          RELEASE_REF: ${{ github.ref }}
+        run: |
+          export PATH="$HOME/go/bin:$PATH"
+          RELEASE_TAG="${GITHUB_REF#refs/heads/release/}"
+          git-chglog --next-tag "$RELEASE_TAG" > release-notes.md
+
+      - name: Upload release preview artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-notes-${{ github.run_id }}
+          path: release-notes.md
+          retention-days: 7
 
 # ========================================================
 # Pipeline 整体监控与告警 (需对接内部系统)
