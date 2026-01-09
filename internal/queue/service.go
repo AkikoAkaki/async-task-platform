@@ -4,13 +4,12 @@ package queue
 
 import (
 	"context"
-	"encoding/json"
 	"time"
 
-	"github.com/google/uuid"
 	pb "github.com/AkikoAkaki/distributed-delay-queue/api/proto"
 	"github.com/AkikoAkaki/distributed-delay-queue/internal/common/errno"
 	"github.com/AkikoAkaki/distributed-delay-queue/internal/storage"
+	"github.com/google/uuid"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )

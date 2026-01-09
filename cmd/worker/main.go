@@ -47,7 +47,7 @@ func main() {
 					log.Printf("--- Processed %d tasks ---", len(tasks))
 					for _, t := range tasks {
 						// 工业级：这里应该扔给一个 Worker Pool 线程池去并发执行，而不是串行阻塞
-						log.Printf("[EXECUTE] TaskID: %s, Payload: %s, Delay: %ds", 
+						log.Printf("[EXECUTE] TaskID: %s, Payload: %s, Delay: %ds",
 							t.Id, t.Payload, time.Now().Unix()-t.ExecuteTime)
 					}
 				}

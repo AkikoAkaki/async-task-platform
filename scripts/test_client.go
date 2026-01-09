@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"log"
-	"time"
 
 	pb "github.com/AkikoAkaki/distributed-delay-queue/api/proto"
 	"google.golang.org/grpc"
