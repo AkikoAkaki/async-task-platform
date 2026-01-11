@@ -43,12 +43,20 @@ func (s *Service) Enqueue(ctx context.Context, req *pb.EnqueueRequest) (*pb.Enqu
 		taskID = uuid.New().String()
 	}
 
+	maxRetries := req.MaxRetries
+	if maxRetries == 0 {
+		maxRetries = 3 // 硬编码默认值，或者后续通过依赖注入传入 Config
+	}
+
 	// 3. 构造核心实体 Task
 	task := &pb.Task{
 		Id:          taskID,
 		Topic:       req.Topic,
 		Payload:     req.Payload,
 		ExecuteTime: time.Now().Add(time.Duration(req.DelaySeconds) * time.Second).Unix(),
+		RetryCount:  0,
+		MaxRetries:  maxRetries,
+		CreatedAt:   time.Now().Unix(),
 	}
 
 	// 4. 调用存储层

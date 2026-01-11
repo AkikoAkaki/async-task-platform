@@ -9,12 +9,23 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/AkikoAkaki/distributed-delay-queue/internal/conf"
 	"github.com/AkikoAkaki/distributed-delay-queue/internal/storage/redis"
 )
 
 func main() {
-	redisAddr := "localhost:6379"
-	store := redis.NewStore(redisAddr)
+	// 1. 加载配置
+	cfg, err := conf.Load("./config")
+	if err != nil {
+		cfg, err = conf.Load("../../config")
+		if err != nil {
+			log.Fatalf("failed to load config: %v", err)
+		}
+	}
+
+	// 2. 使用配置连接 Redis
+	store := redis.NewStore(cfg.Redis.Addr)
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 

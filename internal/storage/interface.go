@@ -1,6 +1,8 @@
 // Package storage 定义了系统任务持久化层的抽象规范。
 // 职责：屏蔽底层存储介质（如 Redis、MySQL、RocksDB）的差异，
 // 为业务逻辑层提供统一的任务 CRUD 接口，支持分布式环境下的任务状态管理。
+//
+//go:generate mockgen -source=interface.go -destination=mocks/store_mock.go -package=mocks
 package storage
 
 import (
