@@ -17,7 +17,8 @@ import (
 // @ThreadSafe: redis.Client 本身并发安全，Store 实例支持多协程共用。
 type Store struct {
 	client *redis.Client // Redis 官方 Golang 客户端
-	dbName string        // 全局任务池的 Key 名称（业务隔离前缀）
+	pending_key string        // 待处理任务的 Key 名称（业务隔离前缀）ZSet: ddq tasks
+	running_key string        // 正在处理任务的 Key 名称（业务隔离前缀）Hash: ddq running
 }
 
 // 编译期校验：确保 Store 结构体完整实现了 JobStore 定义的所有契约。
@@ -31,7 +32,8 @@ func NewStore(addr string) *Store {
 	})
 	return &Store{
 		client: rdb,
-		dbName: "ddq:tasks", // Default namespace
+		pending_key: "ddq:tasks", // Default namespace
+		running_key: "ddq:running", // Default namespace
 	}
 }
 
@@ -53,22 +55,24 @@ func (s *Store) Add(ctx context.Context, task *pb.Task) error {
 	}
 
 	// 3. 执行写入：若写入失败需向上层抛出 Error 由 Service 层决定重试逻辑。
-	if err := s.client.ZAdd(ctx, s.dbName, member).Err(); err != nil {
+	if err := s.client.ZAdd(ctx, s.pending_key, member).Err(); err != nil {
 		return fmt.Errorf("redis zadd failed: %w", err)
 	}
 
 	return nil
 }
 
-// GetReady 批量获取并从队列中弹出已到期的待执行任务。
+// FetchAndHold 批量获取并从队列中弹出已到期的待执行任务。
 // @Description 利用 Lua 脚本实现“查询+删除”的原子语义，确保在分布式水平扩展时，同一任务仅被下发一次。
 // @Return: 返回解析成功的任务列表。若解析失败，将跳过损坏条目并继续处理，保障队列可用性。
-func (s *Store) GetReady(ctx context.Context, topic string, limit int64) ([]*pb.Task, error) {
+func (s *Store) FetchAndHold(ctx context.Context, topic string, limit int64) ([]*pb.Task, error) {
 	now := time.Now().Unix()
 
 	// 1. 调用 Lua 脚本进行原子弹出。
 	// @Optimization: MVP 版本暂不支持按 Topic 分片，全局共用一个 ZSet。
-	val, err := s.client.Eval(ctx, luaPeekAndRem, []string{s.dbName}, now, limit).Result()
+	val, err := s.client.Eval(ctx, luaFetchAndHold,
+		[]string{s.pending_key, s.running_key},
+		now, limit, now).Result()
 	if err != nil {
 		if err == redis.Nil {
 			return []*pb.Task{}, nil
@@ -105,5 +109,5 @@ func (s *Store) GetReady(ctx context.Context, topic string, limit int64) ([]*pb.
 // @Status: Unimplemented (MVP Phase)
 // @Warning: 当前 ZSet 结构不支持基于 ID 的 O(1) 检索，需引入 ID->Payload 的索引映射。
 func (s *Store) Remove(ctx context.Context, id string) error {
-	return fmt.Errorf("remove not implemented in MVP: requires secondary index mapping")
+	return fmt.Errorf("not implemented")
 }

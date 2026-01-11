@@ -17,20 +17,35 @@ package redis
 //
 // @Returns
 // table: 返回包含任务 Payload (ID) 的数组；若无到期任务则返回空 Table。
-const luaPeekAndRem = `
-local key = KEYS[1]
+const luaFetchAndHold = `
+local pending_key = KEYS[1]
+local running_key = KEYS[2]
 local max_score = ARGV[1]
 local limit = ARGV[2]
+local now = ARGV[3]
 
 -- 1. 检索所有 Score 小于等于当前时间戳的任务
-local tasks = redis.call('ZRANGEBYSCORE', key, 0, max_score, 'LIMIT', 0, limit)
+local raw_tasks = redis.call('ZRANGEBYSCORE', pending_key, 0, max_score, 'LIMIT', 0, limit)
 
-if #tasks > 0 then
-    -- 2. 执行原子删除，利用 unpack 将 table 展开为多参数模式
-    redis.call('ZREM', key, unpack(tasks))
-    return tasks
+if #raw_tasks > 0 then
+    for i, raw_json in ipairs(raw_tasks) do
+        -- 2. 解析 TaskID (Redis 内置 cjson 库)
+        -- 注意：这里假设 raw_json 是合法的 JSON 字符串
+        local task = cjson.decode(raw_json)
+        local id = task.id
+
+        -- 3. 从 Pending 移除
+        redis.call('ZREM', pending_key, raw_json)
+
+        -- 4. 构造 Running 记录 (包装一下，记录开始时间)
+        -- 格式: {"start": 1700000000, "task": {...}}
+        local running_data = cjson.encode({start = tonumber(now), task = task})
+        
+        -- 5. 写入 Running Hash
+        redis.call('HSET', running_key, id, running_data)
+    end
+    return raw_tasks
 else
-    -- 3. 显式返回空 table，对应 Go 中的空切片
     return {}
 end
 `

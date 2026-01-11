@@ -21,12 +21,12 @@ type JobStore interface {
 	// @Return: 存储失败时返回包含具体原因的 errno，如存储连接异常或数据校验失败。
 	Add(ctx context.Context, task *pb.Task) error
 
-	// GetReady 批量获取并锁定已到执行时间的任务列表。
+	// FetchAndHold 批量获取并锁定已到执行时间的任务列表。
 	// @Description 该方法通常包含“读取-修改”的复合操作，实现者需确保在并发环境下不重复下发同一任务。
 	// @Param topic: 任务所属的业务主题分类。
 	// @Param limit: 本次拉取任务的最大数量上限，用于防止内存溢出。
 	// @Return: 返回待处理的任务切片；若当前无到期任务，返回空切片及 nil error。
-	GetReady(ctx context.Context, topic string, limit int64) ([]*pb.Task, error)
+	FetchAndHold(ctx context.Context, topic string, limit int64) ([]*pb.Task, error)
 
 	// Remove 根据任务唯一标识从存储中彻底删除任务。
 	// @Description 常用于任务撤回或任务成功处理后的终结操作。

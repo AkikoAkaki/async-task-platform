@@ -47,7 +47,7 @@ func main() {
 				return
 			case <-ticker.C:
 				// 1. 拉取任务
-				tasks, err := store.GetReady(ctx, "default", 10)
+				tasks, err := store.FetchAndHold(ctx, "default", 10)
 				if err != nil {
 					log.Printf("Error polling tasks: %v", err)
 					continue
