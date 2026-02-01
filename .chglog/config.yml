@@ -2,7 +2,7 @@ style: angular
 template: CHANGELOG.tpl.md
 info:
   title: Changelog
-  repository_url: https://github.com/AkikoAkaki/distributed-delay-queue
+  repository_url: https://github.com/AkikoAkaki/async-task-platform
 options:
   tag_filter_pattern: '^v'
   sort: desc

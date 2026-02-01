@@ -1,6 +1,6 @@
----
+﻿---
 name: code-review
-description: Reviews code changes for bugs, style issues, and best practices. Use when evaluating new features or bug fixes in the distributed-delay-queue project.
+description: Reviews code changes for bugs, style issues, and best practices. Use when evaluating new features or bug fixes in the async-task-platform project.
 ---
 
 # Code Review Skill
@@ -28,3 +28,4 @@ When reviewing code in this project, follow these rigorous engineering standards
 - Provide specific line-by-line comments.
 - Explain the "Why" behind suggestions (e.g., "Using ZADD here without Lua might lead to a race condition").
 - Suggest specific code snippets for fixes.
+
