@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package api.queue;
 
-option go_package = "github.com/AkikoAkaki/distributed-delay-queue/api/proto;pb";
+option go_package = "github.com/AkikoAkaki/async-task-platform/api/proto;pb";
 
 // DelayQueueService 定义了分布式延迟队列的核心能力。
 service DelayQueueService {
@@ -21,7 +21,8 @@ message EnqueueRequest {
   string topic = 1;         // 业务主题 (如 "order_cancel")
   string payload = 2;       // 任务载荷 (JSON string)
   int64  delay_seconds = 3; // 延迟时间 (秒)
-  string id = 4;            // 可选：客户端指定的唯一ID，若为空则由服务端生成
+  string id = 4;            // 客户端指定的唯一ID，若为空则由服务端生成
+  int32  max_retries = 5;   // 允许客户端指定最大重试次数，如果不传则使用系统默认
 }
 
 message EnqueueResponse {
@@ -53,4 +54,7 @@ message Task {
   string topic = 2;
   string payload = 3;
   int64  execute_time = 4; // 计划执行时间戳
+  int32 retry_count = 5; // 已重试次数 (默认0)
+  int32 max_retries = 6; // 最大允许重试次数
+  int64 created_at = 7;  // 任务创建时间戳 (用于统计或清理)
 }

@@ -1,0 +1,17 @@
+app:
+  name: "async-task-platform"
+  env: "local" # local, dev, prod
+
+server:
+  port: 8080
+  grpc_port: 9090
+
+redis:
+  addr: "localhost:6379"
+  password: ""
+  db: 0
+
+queue:
+  visibility_timeout: 60 # 60秒没处理完，就认为 Worker 挂了
+  watchdog_interval: 30  # 每 30秒检查一次
+  max_retries: 3         # 默认重试 3 次

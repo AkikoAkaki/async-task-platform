@@ -1,13 +1,40 @@
+# Async Task Platform Configuration
+# Copy this file to config.yaml and customize as needed
+
 app:
-  name: "distributed-delay-queue"
-  env: "local" # local, dev, prod
+  name: "async-task-platform"
+  env: "local"  # Options: local, dev, staging, prod
 
 server:
-  port: 8080
-  grpc_port: 9090
+  port: 8080       # HTTP port (reserved for future metrics/health endpoints)
+  grpc_port: 9090  # gRPC service port
 
 redis:
   addr: "localhost:6379"
-  password: ""
-  db: 0
-`
+  password: ""     # Leave empty for local development
+  db: 0            # Redis database index
+
+queue:
+  # Visibility timeout: seconds a task can be "in-flight" before being recovered
+  # If a worker doesn't Ack within this time, Watchdog re-enqueues the task
+  visibility_timeout: 60
+
+  # Watchdog interval: how often the Watchdog scans for stuck tasks
+  watchdog_interval: 30
+
+  # Default max retries: tasks exceeding this limit go to Dead Letter Queue
+  max_retries: 3
+
+# Future configuration sections (not yet implemented):
+# 
+# scheduler:
+#   leader_election: true
+#   lease_duration: 15  # seconds
+# 
+# metrics:
+#   enabled: true
+#   path: "/metrics"
+# 
+# tracing:
+#   enabled: false
+#   endpoint: "http://localhost:4317"

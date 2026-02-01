@@ -17,20 +17,139 @@ package redis
 //
 // @Returns
 // table: 返回包含任务 Payload (ID) 的数组；若无到期任务则返回空 Table。
-const luaPeekAndRem = `
-local key = KEYS[1]
+const luaFetchAndHold = `
+local pending_key = KEYS[1]
+local running_key = KEYS[2]
 local max_score = ARGV[1]
 local limit = ARGV[2]
+local now = ARGV[3]
 
 -- 1. 检索所有 Score 小于等于当前时间戳的任务
-local tasks = redis.call('ZRANGEBYSCORE', key, 0, max_score, 'LIMIT', 0, limit)
+local raw_tasks = redis.call('ZRANGEBYSCORE', pending_key, 0, max_score, 'LIMIT', 0, limit)
 
-if #tasks > 0 then
-    -- 2. 执行原子删除，利用 unpack 将 table 展开为多参数模式
-    redis.call('ZREM', key, unpack(tasks))
-    return tasks
+if #raw_tasks > 0 then
+    for i, raw_json in ipairs(raw_tasks) do
+        -- 2. 解析 TaskID (Redis 内置 cjson 库)
+        -- 注意：这里假设 raw_json 是合法的 JSON 字符串
+        local task = cjson.decode(raw_json)
+        local id = task.id
+
+        -- 3. 从 Pending 移除
+        redis.call('ZREM', pending_key, raw_json)
+
+        -- 4. 构造 Running 记录 (包装一下，记录开始时间)
+        -- 格式: {"start": 1700000000, "task": {...}}
+        local running_data = cjson.encode({start = tonumber(now), task = task})
+        
+        -- 5. 写入 Running Hash
+        redis.call('HSET', running_key, id, running_data)
+    end
+    return raw_tasks
 else
-    -- 3. 显式返回空 table，对应 Go 中的空切片
     return {}
 end
+`
+
+// luaAck 确认任务完成
+// KEYS[1]: Running Hash (ddq:running)
+// ARGV[1]: TaskID
+const luaAck = `
+return redis.call('HDEL', KEYS[1], ARGV[1])
+`
+
+// luaNack 任务失败重试
+// @Logic
+// 1. 从 Running 移除
+// 2. 判断是否超过最大重试次数
+// 3. 没超过 -> 更新 retry_count -> ZADD 回 Pending
+// 4. 超过了 -> LPUSH 到 DLQ (死信队列)
+//
+// @Parameters
+// KEYS[1]: Running Hash (ddq:running)
+// KEYS[2]: Pending ZSet (ddq:tasks)
+// KEYS[3]: Dead Letter Queue (ddq:dlq)
+// ARGV[1]: TaskID
+// ARGV[2]: JSON Payload (包含更新后的 retry_count 的完整 task 结构)
+// ARGV[3]: Next Execute Time (重试的执行时间，通常是现在)
+// ARGV[4]: Is Dead (1=进死信, 0=重试)
+const luaNack = `
+local running_key = KEYS[1]
+local pending_key = KEYS[2]
+local dlq_key = KEYS[3]
+
+local id = ARGV[1]
+local task_json = ARGV[2]
+local score = ARGV[3]
+local is_dead = tonumber(ARGV[4])
+
+-- 1. 无论如何，先从正在运行列表移除
+redis.call('HDEL', running_key, id)
+
+if is_dead == 1 then
+    -- 2. 超过重试次数，进死信队列
+    redis.call('LPUSH', dlq_key, task_json)
+else
+    -- 3. 没超过，放回等待队列重试
+    redis.call('ZADD', pending_key, score, task_json)
+end
+
+return 1
+`
+
+// luaRecover 扫描并恢复超时任务
+// 逻辑：
+// 1. 获取所有 Running 任务 (HGETALL)
+// 2. 遍历检查：如果 (now - start_time) > visibility_timeout
+// 3. 执行 NACK 逻辑 (retry++ -> ZADD/LPUSH -> HDEL)
+//
+// KEYS[1]: Running Hash
+// KEYS[2]: Pending ZSet
+// KEYS[3]: Dead Letter Queue
+// ARGV[1]: Now Timestamp
+// ARGV[2]: Visibility Timeout
+// ARGV[3]: Max Retries
+const luaRecover = `
+local running_key = KEYS[1]
+local pending_key = KEYS[2]
+local dlq_key = KEYS[3]
+local now = tonumber(ARGV[1])
+local timeout = tonumber(ARGV[2])
+local max_retries = tonumber(ARGV[3])
+
+-- 1. 获取所有正在运行的任务 (注意：生产环境若 Hash 巨大，应用 HSCAN 代替)
+local all_running = redis.call('HGETALL', running_key)
+
+-- HGETALL 返回的是 [key1, val1, key2, val2...] 的数组
+for i = 1, #all_running, 2 do
+    local id = all_running[i]
+    local val_str = all_running[i+1]
+    
+    local entry = cjson.decode(val_str)
+    local start_time = tonumber(entry.start)
+    local task = entry.task
+
+    -- 2. 检查是否超时
+    if (now - start_time) > timeout then
+        -- 3. 超时了！执行恢复逻辑
+        
+        -- a. 更新元数据
+        task.retry_count = (task.retry_count or 0) + 1
+        -- 为了存储，重新 encode task
+        local task_json = cjson.encode(task)
+
+        -- b. 从 Running 移除
+        redis.call('HDEL', running_key, id)
+
+        -- c. 判断去向
+        if task.retry_count >= max_retries then
+            -- 进死信
+            redis.call('LPUSH', dlq_key, task_json)
+        else
+            -- 重新进队列 (立即重试，Score = Now)
+            redis.call('ZADD', pending_key, now, task_json)
+        end
+    end
+end
+
+return 1
 `

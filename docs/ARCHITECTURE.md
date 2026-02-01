@@ -1,107 +1,230 @@
 # Architecture Overview
 
-This document describes how the distributed delay queue is structured today and what is planned for the near term.
+This document describes the architecture of the Async Task Platform—a distributed system designed to handle delayed execution, periodic scheduling, and (in the future) workflow orchestration.
 
-## Goals
-- Accept delayed jobs through a strongly typed API.
-- Persist jobs durably so that they survive process crashes.
-- Deliver tasks close to their scheduled execution time with horizontal scalability.
-- Provide a clear abstraction layer so storage engines can be swapped without touching business logic.
+## Design Goals
 
-## Component Map
-1. **API Server**
-   - Exposes the gRPC `DelayQueueService` defined under `api/proto`.
-   - Validates client payloads, normalizes timestamps, and calls into domain services.
-2. **Scheduler Loop**
-   - Runs inside the server process (or a dedicated service in the future).
-   - Periodically calls `JobStore.GetReady` to pull due tasks and then publishes them to workers.
-3. **Worker Fleet**
-   - Polls the `Retrieve` RPC with a configured topic and batch size.
-   - Executes tasks and acknowledges completion or calls `Delete` to drop cancelled jobs.
-4. **JobStore Implementations**
-   - `internal/storage` declares the `JobStore` interface.
-   - `internal/storage/redis` implements the interface with a Redis sorted set plus Lua scripts for atomic pop.
-5. **External Dependencies**
-   - Redis (default namespace `ddq:tasks`).
-   - Docker Compose is used to provision Redis for local work.
+1. **Reliable Delayed Execution**: Tasks execute at their scheduled time, surviving process crashes and network partitions.
+2. **Exactly-Once Semantics**: Each task is delivered to exactly one worker, with automatic recovery for failed executions.
+3. **Horizontal Scalability**: Multiple workers can consume tasks in parallel; the scheduler can be scaled with leader election.
+4. **Pluggable Storage**: The `JobStore` interface allows swapping Redis for other backends without changing business logic.
+5. **Observable Operations**: Integrated metrics and tracing for production debugging.
+
+## System Components
+
+### Component Diagram
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                          Async Task Platform                             │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                          │
+│  ┌─────────────┐         ┌─────────────┐         ┌─────────────┐        │
+│  │  Producer   │         │  Scheduler  │         │   Worker    │        │
+│  │  (Client)   │         │  (Server)   │         │  (Consumer) │        │
+│  │             │  gRPC   │             │  Poll   │             │        │
+│  │  Enqueue ───┼────────▶│  Watchdog   │◀────────┼─ Execute    │        │
+│  │  Delete     │         │  Recovery   │         │  Ack/Nack   │        │
+│  └─────────────┘         └──────┬──────┘         └──────┬──────┘        │
+│                                 │                       │               │
+│                                 ▼                       ▼               │
+│  ┌───────────────────────────────────────────────────────────────────┐  │
+│  │                        Storage Layer                               │  │
+│  │  ┌───────────────────────────────────────────────────────────┐    │  │
+│  │  │                    JobStore Interface                      │    │  │
+│  │  │  Add() | FetchAndHold() | Remove() | Ack() | Nack()       │    │  │
+│  │  └───────────────────────────────────────────────────────────┘    │  │
+│  │                              │                                     │  │
+│  │                              ▼                                     │  │
+│  │  ┌───────────────────────────────────────────────────────────┐    │  │
+│  │  │                   Redis Implementation                     │    │  │
+│  │  │                                                            │    │  │
+│  │  │  ddq:tasks (ZSet)    ddq:running (Hash)    ddq:dlq (List) │    │  │
+│  │  │  Score: ExecuteTime   Field: TaskID         LPUSH on fail  │    │  │
+│  │  │  Member: Task JSON    Value: Task JSON                     │    │  │
+│  │  └───────────────────────────────────────────────────────────┘    │  │
+│  └───────────────────────────────────────────────────────────────────┘  │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+### Component Responsibilities
+
+| Component | Package | Purpose |
+|-----------|---------|---------|
+| **gRPC Server** | `cmd/server` | Entry point; initializes storage, starts Watchdog, exposes gRPC service |
+| **Queue Service** | `internal/queue` | Implements gRPC handlers; validates input, generates IDs, routes to storage |
+| **Watchdog** | `internal/scheduler` | Background goroutine; recovers tasks stuck in "running" state |
+| **Worker** | `cmd/worker` | Polls `FetchAndHold`; executes task logic; calls Ack/Nack |
+| **JobStore** | `internal/storage` | Interface defining storage contract |
+| **Redis Store** | `internal/storage/redis` | Concrete implementation using Redis data structures + Lua scripts |
+
+## Data Model
+
+### Task Entity
+
+```protobuf
+message Task {
+  string id = 1;           // Unique identifier (UUID or client-provided)
+  string topic = 2;        // Logical grouping (e.g., "order-cancel")
+  string payload = 3;      // Business data (JSON string)
+  int64  execute_time = 4; // Unix timestamp for scheduled execution
+  int32  retry_count = 5;  // Current retry attempt (starts at 0)
+  int32  max_retries = 6;  // Maximum allowed retries before DLQ
+  int64  created_at = 7;   // Task creation timestamp
+}
+```
+
+### Redis Data Layout
+
+| Key | Type | Purpose |
+|-----|------|---------|
+| `ddq:tasks` | Sorted Set | Pending tasks. Score = `execute_time`, Member = JSON-serialized Task |
+| `ddq:running` | Hash | In-flight tasks. Field = `task_id`, Value = JSON Task + hold timestamp |
+| `ddq:dlq` | List | Dead Letter Queue. Tasks that exceeded `max_retries` |
 
 ## Runtime Flows
+
 ### Enqueue Path
+
 ```mermaid
 sequenceDiagram
     participant Client
-    participant Service as internal/queue.Service
-    participant Store as internal/storage.JobStore (Redis)
-    participant Redis as Redis (ZSet)
+    participant Server as Queue Service
+    participant Store as Redis Store
+    participant Redis
 
-    Client->>Service: EnqueueRequest(topic, payload, delay)
-    Note over Service: Validate & Build Task (UUID, ExecuteTime)
-    Service->>Store: Add(ctx, task)
-    Store->>Redis: ZADD score=ExecuteTime, member=JSON(task)
+    Client->>Server: Enqueue(topic, payload, delay_seconds)
+    Server->>Server: Validate input
+    Server->>Server: Generate UUID (if no id provided)
+    Server->>Server: Calculate execute_time = now + delay
+    Server->>Store: Add(ctx, task)
+    Store->>Redis: ZADD ddq:tasks score=execute_time member=JSON(task)
     Redis-->>Store: OK
-    Store-->>Service: nil error
-    Service-->>Client: EnqueueResponse(success, id)
+    Store-->>Server: nil
+    Server-->>Client: EnqueueResponse{success: true, id: "..."}
 ```
 
-1. Client sends `EnqueueRequest(topic, payload, delay_seconds, optional id)`.
-2. Server converts the delay into an absolute Unix timestamp and builds a `pb.Task`.
-3. `JobStore.Add` serializes the task (JSON in the Redis implementation) and adds it to the ZSet with the timestamp score.
-4. The scheduler loop eventually observes that the score is less than `now` and makes the task eligible.
+### FetchAndHold Path (Worker Consumption)
 
-### Retrieve Path
 ```mermaid
 sequenceDiagram
-    participant Worker as cmd/worker
-    participant Store as internal/storage.JobStore (Redis)
-    participant Lua as Lua Script (Atomic Pop)
-    participant Redis as Redis (ZSet)
+    participant Worker
+    participant Store as Redis Store
+    participant Lua as Lua Script
+    participant Redis
 
-    loop Every 1 Second
-        Worker->>Store: GetReady(ctx, topic, limit)
-        Store->>Lua: EVAL(luaPeekAndRem, now, limit)
-        Lua->>Redis: ZRANGEBYSCORE (due tasks)
-        Redis-->>Lua: list of tasks
+    loop Every 1 second
+        Worker->>Store: FetchAndHold(ctx, topic, limit=10)
+        Store->>Lua: EVAL luaFetchAndHold
+        Lua->>Redis: ZRANGEBYSCORE ddq:tasks -inf now LIMIT 0 10
+        Redis-->>Lua: [task1, task2, ...]
         alt tasks found
-            Lua->>Redis: ZREM (tasks)
+            Lua->>Redis: ZREM ddq:tasks task1 task2 ...
+            Lua->>Redis: HSET ddq:running task1.id task1 ...
             Redis-->>Lua: OK
-            Lua-->>Store: return raw JSON list
-        else no tasks
-            Lua-->>Store: return empty
         end
-        Store->>Store: JSON Unmarshal (Defensive Parsing)
-        Store-->>Worker: list of Task objects
-        Worker->>Worker: Execute Task Logic
+        Lua-->>Store: [task1, task2, ...]
+        Store-->>Worker: []*Task
+        Worker->>Worker: Execute task logic
+        alt success
+            Worker->>Store: Ack(task.id)
+            Store->>Redis: HDEL ddq:running task.id
+        else failure
+            Worker->>Store: Nack(task)
+            Note over Store: Increment retry_count
+            alt retry_count < max_retries
+                Store->>Redis: ZADD ddq:tasks (re-enqueue)
+                Store->>Redis: HDEL ddq:running task.id
+            else exceeded
+                Store->>Redis: LPUSH ddq:dlq task
+                Store->>Redis: HDEL ddq:running task.id
+            end
+        end
     end
 ```
 
-1. Worker issues `RetrieveRequest(topic, batch_size)`.
-2. Scheduler loop (or the worker itself depending on deployment) calls `JobStore.GetReady` with the same topic and limit.
-3. Redis Lua script atomically fetches and removes due members from `ddq:tasks`.
-4. Tasks are returned through `RetrieveResponse` and executed by the worker.
+### Watchdog Recovery
 
-### Delete Path
-1. Worker or client issues `DeleteRequest(id)` when a task must be cancelled.
-2. Future storage implementations will use a secondary index to remove the task by id (the Redis MVP still returns `not implemented`).
+The Watchdog runs periodically (configurable interval) to detect and recover "stuck" tasks:
 
-## Data Model
-- `Task.id`: globally unique identifier, provided by the caller or generated server side.
-- `Task.topic`: allows logical isolation of different business streams.
-- `Task.payload`: opaque JSON string interpreted by downstream workers.
-- `Task.execute_time`: Unix timestamp (seconds) that determines ordering inside the JobStore.
+```mermaid
+sequenceDiagram
+    participant Watchdog
+    participant Store as Redis Store
+    participant Lua as Lua Script
+    participant Redis
 
-## Redis Layout
-- **Key**: `ddq:tasks` (can be namespaced later per tenant/topic).
-- **Score**: execution timestamp.
-- **Member**: serialized `Task` JSON blob.
-- **Lua Script**: `internal/storage/redis/script.go` atomically performs `ZRANGEBYSCORE` + `ZREM` to avoid duplicate delivery.
+    loop Every watchdog_interval seconds
+        Watchdog->>Store: CheckAndMoveExpired(ctx, visibility_timeout, max_retries)
+        Store->>Lua: EVAL luaRecover
+        Lua->>Redis: HSCAN ddq:running
+        Redis-->>Lua: [task1, task2, ...]
+        loop for each task
+            alt hold_time + visibility_timeout < now
+                alt retry_count < max_retries
+                    Lua->>Redis: ZADD ddq:tasks (re-enqueue with retry+1)
+                else exceeded
+                    Lua->>Redis: LPUSH ddq:dlq task
+                end
+                Lua->>Redis: HDEL ddq:running task.id
+            end
+        end
+        Lua-->>Store: OK
+        Store-->>Watchdog: nil
+    end
+```
+
+## Atomicity Guarantees
+
+All critical operations use **Lua scripts** to ensure atomicity:
+
+| Operation | Script | Guarantee |
+|-----------|--------|-----------|
+| `FetchAndHold` | `luaFetchAndHold` | Tasks are removed from pending and added to running in one atomic operation |
+| `Ack` | `luaAck` | Task is removed from running only if it exists |
+| `Nack` | `luaNack` | Task is either re-enqueued or moved to DLQ atomically |
+| `Recover` | `luaRecover` | Timeout detection and recovery happen without race conditions |
 
 ## Scaling Considerations
-- Introduce sharded keys such as `ddq:tasks:{topic}` to reduce contention.
-- Replace JSON serialization with Protobuf to shrink memory footprint.
-- Build a `Remove` implementation backed by an id->payload hash map.
-- Move the scheduler loop into its own service so multiple API replicas can share the same Redis cluster.
+
+### Current Limitations (MVP)
+- Single Redis instance (no clustering)
+- All topics share one ZSet (`ddq:tasks`)
+- No leader election—only one scheduler should run
+
+### Future Enhancements
+| Enhancement | Benefit |
+|-------------|---------|
+| **Topic Sharding** | `ddq:tasks:{topic}` reduces lock contention |
+| **Redis Cluster** | Horizontal scaling for storage |
+| **Leader Election** | Multiple server instances with single active scheduler |
+| **Protobuf Serialization** | Reduced memory footprint vs JSON |
+
+## Configuration
+
+Key configuration options in `config/config.yaml`:
+
+```yaml
+app:
+  name: "async-task-platform"
+  env: "local"
+
+server:
+  grpc_port: 9090
+
+redis:
+  addr: "localhost:6379"
+
+queue:
+  visibility_timeout: 30    # Seconds before stuck task is recovered
+  watchdog_interval: 10     # Seconds between Watchdog scans
+  max_retries: 3            # Default retry limit
+```
 
 ## Related Documents
-- `docs/DEV_SETUP.md` explains how to bootstrap the development environment.
-- `docs/API.md` details each RPC in `DelayQueueService`.
-- `docs/adr/001-architecture-and-storage.md` records the rationale behind using Redis + gRPC for the MVP.
+
+- [API.md](API.md) — gRPC API reference and examples
+- [DEV_SETUP.md](DEV_SETUP.md) — Development environment setup
+- [adr/001-architecture-and-storage.md](adr/001-architecture-and-storage.md) — Why Redis + gRPC
+- [adr/002-gitflow-and-versioning.md](adr/002-gitflow-and-versioning.md) — Git workflow and versioning

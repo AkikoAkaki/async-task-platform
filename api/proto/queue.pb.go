@@ -7,11 +7,12 @@
 package pb
 
 import (
-	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
-	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 	reflect "reflect"
 	sync "sync"
 	unsafe "unsafe"
+
+	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
+	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 )
 
 const (
@@ -27,7 +28,8 @@ type EnqueueRequest struct {
 	Topic         string                 `protobuf:"bytes,1,opt,name=topic,proto3" json:"topic,omitempty"`                                    // 业务主题 (如 "order_cancel")
 	Payload       string                 `protobuf:"bytes,2,opt,name=payload,proto3" json:"payload,omitempty"`                                // 任务载荷 (JSON string)
 	DelaySeconds  int64                  `protobuf:"varint,3,opt,name=delay_seconds,json=delaySeconds,proto3" json:"delay_seconds,omitempty"` // 延迟时间 (秒)
-	Id            string                 `protobuf:"bytes,4,opt,name=id,proto3" json:"id,omitempty"`                                          // 可选：客户端指定的唯一ID，若为空则由服务端生成
+	Id            string                 `protobuf:"bytes,4,opt,name=id,proto3" json:"id,omitempty"`                                          // 客户端指定的唯一ID，若为空则由服务端生成
+	MaxRetries    int32                  `protobuf:"varint,5,opt,name=max_retries,json=maxRetries,proto3" json:"max_retries,omitempty"`       // 允许客户端指定最大重试次数，如果不传则使用系统默认
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -88,6 +90,13 @@ func (x *EnqueueRequest) GetId() string {
 		return x.Id
 	}
 	return ""
+}
+
+func (x *EnqueueRequest) GetMaxRetries() int32 {
+	if x != nil {
+		return x.MaxRetries
+	}
+	return 0
 }
 
 type EnqueueResponse struct {
@@ -341,6 +350,9 @@ type Task struct {
 	Topic         string                 `protobuf:"bytes,2,opt,name=topic,proto3" json:"topic,omitempty"`
 	Payload       string                 `protobuf:"bytes,3,opt,name=payload,proto3" json:"payload,omitempty"`
 	ExecuteTime   int64                  `protobuf:"varint,4,opt,name=execute_time,json=executeTime,proto3" json:"execute_time,omitempty"` // 计划执行时间戳
+	RetryCount    int32                  `protobuf:"varint,5,opt,name=retry_count,json=retryCount,proto3" json:"retry_count,omitempty"`    // 已重试次数 (默认0)
+	MaxRetries    int32                  `protobuf:"varint,6,opt,name=max_retries,json=maxRetries,proto3" json:"max_retries,omitempty"`    // 最大允许重试次数
+	CreatedAt     int64                  `protobuf:"varint,7,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`       // 任务创建时间戳 (用于统计或清理)
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -403,16 +415,39 @@ func (x *Task) GetExecuteTime() int64 {
 	return 0
 }
 
+func (x *Task) GetRetryCount() int32 {
+	if x != nil {
+		return x.RetryCount
+	}
+	return 0
+}
+
+func (x *Task) GetMaxRetries() int32 {
+	if x != nil {
+		return x.MaxRetries
+	}
+	return 0
+}
+
+func (x *Task) GetCreatedAt() int64 {
+	if x != nil {
+		return x.CreatedAt
+	}
+	return 0
+}
+
 var File_api_proto_queue_proto protoreflect.FileDescriptor
 
 const file_api_proto_queue_proto_rawDesc = "" +
 	"\n" +
-	"\x15api/proto/queue.proto\x12\tapi.queue\"u\n" +
+	"\x15api/proto/queue.proto\x12\tapi.queue\"\x96\x01\n" +
 	"\x0eEnqueueRequest\x12\x14\n" +
 	"\x05topic\x18\x01 \x01(\tR\x05topic\x12\x18\n" +
 	"\apayload\x18\x02 \x01(\tR\apayload\x12#\n" +
 	"\rdelay_seconds\x18\x03 \x01(\x03R\fdelaySeconds\x12\x0e\n" +
-	"\x02id\x18\x04 \x01(\tR\x02id\"`\n" +
+	"\x02id\x18\x04 \x01(\tR\x02id\x12\x1f\n" +
+	"\vmax_retries\x18\x05 \x01(\x05R\n" +
+	"maxRetries\"`\n" +
 	"\x0fEnqueueResponse\x12\x18\n" +
 	"\asuccess\x18\x01 \x01(\bR\asuccess\x12\x0e\n" +
 	"\x02id\x18\x02 \x01(\tR\x02id\x12#\n" +
@@ -426,16 +461,22 @@ const file_api_proto_queue_proto_rawDesc = "" +
 	"\rDeleteRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\"*\n" +
 	"\x0eDeleteResponse\x12\x18\n" +
-	"\asuccess\x18\x01 \x01(\bR\asuccess\"i\n" +
+	"\asuccess\x18\x01 \x01(\bR\asuccess\"\xca\x01\n" +
 	"\x04Task\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x14\n" +
 	"\x05topic\x18\x02 \x01(\tR\x05topic\x12\x18\n" +
 	"\apayload\x18\x03 \x01(\tR\apayload\x12!\n" +
-	"\fexecute_time\x18\x04 \x01(\x03R\vexecuteTime2\xd9\x01\n" +
+	"\fexecute_time\x18\x04 \x01(\x03R\vexecuteTime\x12\x1f\n" +
+	"\vretry_count\x18\x05 \x01(\x05R\n" +
+	"retryCount\x12\x1f\n" +
+	"\vmax_retries\x18\x06 \x01(\x05R\n" +
+	"maxRetries\x12\x1d\n" +
+	"\n" +
+	"created_at\x18\a \x01(\x03R\tcreatedAt2\xd9\x01\n" +
 	"\x11DelayQueueService\x12@\n" +
 	"\aEnqueue\x12\x19.api.queue.EnqueueRequest\x1a\x1a.api.queue.EnqueueResponse\x12C\n" +
 	"\bRetrieve\x12\x1a.api.queue.RetrieveRequest\x1a\x1b.api.queue.RetrieveResponse\x12=\n" +
-	"\x06Delete\x12\x18.api.queue.DeleteRequest\x1a\x19.api.queue.DeleteResponseB<Z:github.com/AkikoAkaki/distributed-delay-queue/api/proto;pbb\x06proto3"
+	"\x06Delete\x12\x18.api.queue.DeleteRequest\x1a\x19.api.queue.DeleteResponseB8Z6github.com/AkikoAkaki/async-task-platform/api/proto;pbb\x06proto3"
 
 var (
 	file_api_proto_queue_proto_rawDescOnce sync.Once
